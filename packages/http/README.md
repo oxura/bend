@@ -1,6 +1,8 @@
 # HTTP and HTTPS for Bend
 
-Import `./http.bend as H` from a Bend program. This module adds a bounded
+Published on BendHub as `0x39cbd6b8923682f1e4deba6ee6056b43`:
+`import 0x39cbd6b8923682f1e4deba6ee6056b43/http.bend as H`.
+For local development, use `import ./http.bend as H`. The module adds a bounded
 `H.HTTP.request(method, url, headers, body, max_output, timeout_ms, ca_file)`
 effect; it does not modify `Base` or the Bend linker. `Done{H.Response{status,
 headers, body}}` is a completed transfer even for HTTP 4xx/5xx. `Fail`
