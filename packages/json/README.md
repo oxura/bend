@@ -1,8 +1,9 @@
 # JSON for Bend
 
-Import `./json.bend as J` from another Bend file. After publishing, use the
-content hash in place of the relative path. This package imports `Base` but does
-not change it.
+Published on BendHub as `0xda09635d9d188749939d77eb0a5769b8`:
+`import 0xda09635d9d188749939d77eb0a5769b8/json.bend as J`.
+For local development, use `import ./json.bend as J`. The package imports
+`Base` but does not change it.
 
 `J.JSON.read(text)` returns `Result<&1, &1, U32 & String, J.JSON>`; failures
 contain a character offset and message. `J.JSON.write(value)` returns the same

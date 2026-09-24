@@ -69,6 +69,8 @@ allow(/^media\/logo_(bend|hoc)\.png$/, 100000, true);
 allow(/^media\/game_[a-z_]+\.gif$/, 2000000, true);
 allow(/^media\/slash_boss_3d\/[a-z_]+\.wav$/, 400000, true);
 allow(/^gates\/(_lib|_run|perf|ping|repo|test)\.ts$/, 6000);
+allow(/^packages\/[a-z0-9-]+\/[a-z0-9_]+\.(bend|c|js)$/, 40000);
+allow(/^packages\/[a-z0-9-]+\/(LICENSE|README\.md)$/, 16000);
 allow(/^tests\/[a-z]+\/([a-z0-9-]+\/)?[a-z0-9_]+\.bend$/, 16000);
 allow(/^tests\/[a-z]+\/[a-z0-9_]+\.(c|js)$/, 8000);
 allow(/^tools\/bend-fmt-lsp\/(\.gitignore|README\.md|package\.json|package-lock\.json|tsconfig\.json)$/, 4000);
