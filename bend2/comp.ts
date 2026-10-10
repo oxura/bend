@@ -1193,7 +1193,8 @@ function fun_of(k: Name): Fun {
     }
     const doms = tele_unbind(tld.T).doms;
     const h = tld.e ? Bend.term_higher(tld.e) : null;
-    const n = tld.n + (h === null ? 0
+    // The zero-argument program entry keeps the function it returns.
+    const n = tld.n + (h === null || k === "main" ? 0
       : Math.min(def_raise(h, tld.n), doms.length - tld.n));
     const live = doms.slice(0, n).filter(dom_live);
     if (def_foreign(tld)) {
