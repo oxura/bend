@@ -1778,8 +1778,9 @@ law F32.is_ge:
   for b: F32
   Bool
 
+# Fits the plain F32 -> String callbacks used by List.show and Maybe.show.
 law F32.show:
-  for +a: F32
+  for a: F32
   String
 
 law F32.bits:
