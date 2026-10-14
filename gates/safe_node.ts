@@ -11,7 +11,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 export type Got = {
-  f: string; code: number | null; ms: number; out: string; timeout: boolean;
+  f: string; code: number | null; ms: number; out: string; stdout: string; timeout: boolean;
   signal?: string; error?: string;
   diagnostic?: string; diagnostic_error?: string; diagnostic_ms?: number;
 };
@@ -26,7 +26,7 @@ export function judge(g: Got): [string, string] {
     const why = (g.error ?? out).replace(/\s+/g, " ").slice(0, 300);
     return ["e", "infrastructure: " + why];
   }
-  if (g.code === 0 && out === "ALL PROOFS CHECK") {
+  if (g.code === 0 && g.stdout.trim() === "ALL PROOFS CHECK") {
     return [" ", "agree"];
   }
   if (/^Error: \d+ defs? rel(y|ies) on unsafe or foreign code/m.test(out)) {
@@ -44,11 +44,11 @@ export function judge(g: Got): [string, string] {
 }
 
 async function run(bin: string, args: string[], cap: number): Promise<Omit<Got, "f">> {
-  const g: Omit<Got, "f"> = { code: null, ms: 0, out: "", timeout: false };
+  const g: Omit<Got, "f"> = { code: null, ms: 0, out: "", stdout: "", timeout: false };
   const t0 = Date.now();
   const { promise, resolve } = Promise.withResolvers<void>();
   const kid = child.spawn(bin, args, { env: process.env, detached: true });
-  kid.stdout.on("data", (d) => { g.out += d; });
+  kid.stdout.on("data", (d) => { g.stdout += d; });
   kid.stderr.on("data", (d) => { g.out += d; });
   kid.on("error", (e) => { g.error = e.message; });
   const bomb = setTimeout(() => {
@@ -59,6 +59,7 @@ async function run(bin: string, args: string[], cap: number): Promise<Omit<Got, 
   }, cap);
   kid.on("close", (code, signal) => {
     clearTimeout(bomb);
+    g.out = g.stdout + g.out;
     g.code = code;
     g.ms = Date.now() - t0;
     if (signal) {

@@ -68,7 +68,7 @@ await node_pool(live, shards.map((fs_) => async (node: number) => {
       throw new Error("node", { cause: got.err });
     }
     for (const f of fs_) {
-      gots.push({ f, code: -1, ms: 0, timeout: false,
+      gots.push({ f, code: -1, ms: 0, timeout: false, stdout: "",
         out: "shard failed on " + node + ": " + got.err });
     }
   }

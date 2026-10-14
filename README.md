@@ -269,6 +269,8 @@ It enforces kernel acceptance, source rejection and finite-model out-of-scope
 expectations, plus direct kernel rejection of an invalid inhabitant of Empty.
 Real failing-executable and expired-deadline controls must remain infrastructure
 failures, never expected proof rejections.
+The success verdict is read from stdout; stderr diagnostics remain recorded,
+so an update notice does not turn a checked proof into an infrastructure failure.
 
 The `kernel-verdict` CI job runs this command on every PR and merge-group tree,
 separately from the authoritative repo gate and the four-gate runner's 30-second
