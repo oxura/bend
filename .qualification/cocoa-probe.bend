@@ -70,5 +70,3 @@ def main() -> IO(Unit):
   do IO<Unit>:
     r : Result<&1, &1, U32 & String, Window> <- Window.open("bend-1443-cocoa-review", 97, 65)
     opened(r)
-
-[Showing lines 1-72 of 73. Use :73 to continue]

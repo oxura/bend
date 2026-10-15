@@ -9,7 +9,7 @@ int main(int argc, char **argv) {
     NSArray *all = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID));
     NSMutableArray *owned = [NSMutableArray array];
     for (NSDictionary *window in all) {
-      if ([window[(id)kCGWindowOwnerPID] intValue] == pid) [owned addObject:window];
+      if ([window[(__bridge NSString *)kCGWindowOwnerPID] intValue] == pid) [owned addObject:window];
     }
     CGRect display = CGDisplayBounds(CGMainDisplayID());
     NSDictionary *report = @{@"display": @{@"Width": @(display.size.width), @"Height": @(display.size.height)}, @"windows": owned};
