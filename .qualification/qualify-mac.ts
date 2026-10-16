@@ -1,3 +1,5 @@
+import { mkdir } from "node:fs/promises";
+
 type Bounds = { Width: number; Height: number };
 type WindowInfo = { kCGWindowBounds: Bounds; kCGWindowIsOnscreen?: boolean };
 type Metadata = { display: Bounds; windows: WindowInfo[] };
@@ -20,7 +22,13 @@ function parseMetadata(text: string): Metadata {
   return { display: value.display, windows: value.windows };
 }
 const dir = import.meta.dirname;
-const p = Bun.spawn([dir + "/cocoa-probe", "--gpu", "off", "--threads", "1"], { stdout: "pipe", stderr: "pipe" });
+const mode = process.env.BEND_COCOA_EDGE_MODE ?? "normal";
+const resultDir = dir + "/results/" + mode;
+await mkdir(resultDir, { recursive: true });
+const p = Bun.spawn([dir + "/cocoa-probe", "--gpu", "off", "--threads", "1"], {
+  stdout: "pipe", stderr: "pipe",
+  env: { ...process.env, BEND_COCOA_EDGE_MODE: mode, DYLD_INSERT_LIBRARIES: dir + "/cocoa-edge.dylib" },
+});
 const shots: Promise<unknown>[] = [];
 const observations: Observation[] = [];
 async function observe(stage: string) {
@@ -29,8 +37,8 @@ async function observe(stage: string) {
   const text = await new Response(o.stdout).text();
   const error = await new Response(o.stderr).text();
   const exit = await o.exited;
-  await Bun.write(dir + "/results/" + stage + ".json", text);
-  const image = dir + "/results/" + stage + ".png";
+  await Bun.write(resultDir + "/" + stage + ".json", text);
+  const image = resultDir + "/" + stage + ".png";
   const s = Bun.spawn(["/usr/sbin/screencapture", "-x", image], { stdout: "pipe", stderr: "pipe" });
   observations.push({ stage, exit, error, metadata: text ? parseMetadata(text) : null, screenshotExit: await s.exited, screenshotError: await new Response(s.stderr).text() });
 }
@@ -45,7 +53,7 @@ const reading = (async () => {
     pending += text;
     const lines = pending.split("\n");
     pending = lines.pop()!;
-    for (const line of lines) if (/^(ENTER:FIRST|EXIT:FIRST|ENTER:SECOND)$/.test(line)) shots.push(observe(line.replaceAll(":", "-")));
+    for (const line of lines) if (/^(ENTER:FIRST|EXIT:FIRST|EXIT:RETRY|ENTER:SECOND)$/.test(line)) shots.push(observe(line.replaceAll(":", "-")));
   }
 })();
 const stderrPromise = new Response(p.stderr).text();
@@ -55,16 +63,25 @@ clearTimeout(timeout);
 await reading;
 const stderr = await stderrPromise;
 await Promise.all(shots);
-const report = { exit, stdout, stderr, observations, scope: "Actual Cocoa native consumer and separate CoreGraphics window-server observations; no callbacks or renderer mocked", limits: ["No forced native failure notification", "No induced Retina/display migration", "No ignored-toggle simulation"] };
-await Bun.write(dir + "/results/report.json", JSON.stringify(report, null, 2));
+const report = {
+  mode, exit, stdout, stderr, observations,
+  scope: "Actual Cocoa app, Metal renderer and independent CoreGraphics window-server observations",
+  limits: ["Failure delegates and the missing toggle are controlled OS-boundary injections, not unforced OS failures", "Scale mode changes the reported backing factor and invokes the real backing-change callback; no physical Retina/display migration"],
+};
+await Bun.write(resultDir + "/report.json", JSON.stringify(report, null, 2));
 console.log(JSON.stringify(report, null, 2));
-if (exit !== 0 || (stdout.match(/FULL:OK/g) ?? []).length !== 3 || !stdout.includes("CLOSED")) throw Error("Native Cocoa lifecycle failed; report preserves the actual result");
+if (exit !== 0 || (stdout.match(/FULL:OK/g) ?? []).length !== 4 || !stdout.includes("CLOSED")) throw Error("Native Cocoa lifecycle failed; report preserves the actual result");
+if (mode !== "normal" && !stdout.includes("EDGE:" + mode)) throw Error("Requested native boundary was not exercised");
+if (mode === "scale" && (!stdout.includes("EDGE:scale=2 logical=97x65 drawable=97x65") || !stdout.includes("EDGE:scale=1 logical=97x65 drawable=97x65"))) throw Error("Both backing-scale directions were not exercised");
 for (const o of observations) {
   const metadata = o.metadata;
-  if (o.exit !== 0 || !metadata) throw Error("Window-server observation failed: " + o.stage);
+  if (o.exit !== 0 || !metadata || o.screenshotExit !== 0) throw Error("Native surface observation failed: " + o.stage);
   const windows = metadata.windows;
   const full = windows.some(w => w.kCGWindowIsOnscreen && w.kCGWindowBounds.Width === metadata.display.Width && w.kCGWindowBounds.Height === metadata.display.Height);
-  if (o.stage.startsWith("ENTER") && !full) throw Error("No actual fullscreen window observed: " + o.stage);
-  if (o.stage.startsWith("EXIT") && !windows.some(w => w.kCGWindowIsOnscreen && w.kCGWindowBounds.Width === 97)) throw Error("Original windowed width not restored");
+  const shouldBeFull = o.stage === "ENTER-SECOND"
+    || (o.stage === "ENTER-FIRST" && mode !== "fail-enter" && mode !== "ignore")
+    || (o.stage === "EXIT-FIRST" && mode === "fail-exit");
+  if (shouldBeFull && !full) throw Error("No actual fullscreen window observed: " + o.stage);
+  if (!shouldBeFull && !windows.some(w => w.kCGWindowIsOnscreen && w.kCGWindowBounds.Width === 97)) throw Error("Original windowed width not restored: " + o.stage);
 }
-if (observations.length !== 3) throw Error("Missing native stage observations");
+if (observations.length !== 4) throw Error("Missing native stage observations");

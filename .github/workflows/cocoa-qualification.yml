@@ -24,8 +24,12 @@ jobs:
           export TMPDIR="$GITHUB_WORKSPACE/.qualification/tmp"
           bun bend2/main.ts .qualification/cocoa-probe.bend -o .qualification/cocoa-probe
           clang -fobjc-arc .qualification/observe.m -framework Cocoa -framework ApplicationServices -o .qualification/observe
+          clang -dynamiclib -fobjc-arc .qualification/cocoa-edge.m -framework Cocoa -framework QuartzCore -o .qualification/cocoa-edge.dylib
       - name: Exercise the actual Cocoa window
-        run: bun .qualification/qualify-mac.ts
+        run: |
+          for mode in normal fail-enter fail-exit ignore scale; do
+            BEND_COCOA_EDGE_MODE="$mode" bun .qualification/qualify-mac.ts
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:

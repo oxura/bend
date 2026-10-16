@@ -44,17 +44,23 @@ def finished(w: Window, im: Image) -> IO(Unit):
     Window.close(w)
     IO.print("CLOSED")
 
+def retry_exit(w: Window, im: Image) -> IO(Unit):
+  do IO<Unit>:
+    IO.print("EXIT:RETRY")
+    w2 : Window <- full(w, False{})
+    frames(600n, w2, im, third)
+
 def third(w: Window, im: Image) -> IO(Unit):
   do IO<Unit>:
     IO.print("ENTER:SECOND")
     w2 : Window <- full(w, True{})
-    frames(300n, w2, im, finished)
+    frames(600n, w2, im, finished)
 
 def second(w: Window, im: Image) -> IO(Unit):
   do IO<Unit>:
     IO.print("EXIT:FIRST")
     w2 : Window <- full(w, False{})
-    frames(300n, w2, im, third)
+    frames(600n, w2, im, retry_exit)
 
 def opened(r: Result<&1, &1, U32 & String, Window>) -> IO(Unit):
   match r:
@@ -64,7 +70,7 @@ def opened(r: Result<&1, &1, U32 & String, Window>) -> IO(Unit):
       do IO<Unit>:
         IO.print("ENTER:FIRST")
         w2 : Window <- full(w, True{})
-        frames(300n, w2, build(7n, 0, 0), second)
+        frames(600n, w2, build(7n, 0, 0), second)
 
 def main() -> IO(Unit):
   do IO<Unit>:
