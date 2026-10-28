@@ -43,12 +43,16 @@ static u32 device_heap_metal(id<MTLDevice> device) {
     newComputePipelineStateWithFunction:[library newFunctionWithName:@"heap_checkpoint"]
     error:&error];
   if (!pipeline) return 16;
-  u64 bytes = (HEAP_OFF + PAGE_LEN) * sizeof(u64);
+  u64 cap = CUBE + 1;
+  u64 bytes = (HEAP_OFF + cap * (PAGE_LEN + 10)) * sizeof(u64);
   id<MTLBuffer> memory = [device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
   id<MTLBuffer> result = [device newBufferWithLength:CUBE_T * 4 * sizeof(u32)
     options:MTLResourceStorageModeShared];
   if (!memory || !result) return 32;
-  memset([memory contents], 0, bytes);
+  u64* H = [memory contents];
+  memset(H, 0, bytes);
+  H[H_CAP] = cap;
+  H[H_BUMP] = cap;
   memset([result contents], 0, CUBE_T * 4 * sizeof(u32));
   id<MTLCommandQueue> queue = [device newCommandQueue];
   id<MTLCommandBuffer> command = [queue commandBuffer];
