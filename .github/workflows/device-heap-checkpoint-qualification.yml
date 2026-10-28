@@ -1,0 +1,143 @@
+name: Device heap checkpoint after
+on:
+  push:
+    branches: [verify/1924-checkpoint-after-20261029]
+permissions:
+  contents: read
+jobs:
+  qualify-metal:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: af58e48fdc6ca3511637bb4306dc032bd4a9ec12
+          path: before
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 809b02296d736815f389390655faa4500c627c83
+          path: after
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.0
+      - name: Real allocator checkpoint and same-device paired CLI timing
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import platform
+          import re
+          import statistics
+          import subprocess
+          import time
+          from pathlib import Path
+
+          root = Path.cwd()
+          out = root / '.qualification'
+          out.mkdir(exist_ok=True)
+          sources = {'poll-loop': 'import Base\n\ndef loop?(n: U32, x: U32) -> U32:\n  match n:\n    case 0:\n      x\n    case _:\n      loop((n - 1 : U32), (x * 1664525 + 1013904223 : U32))\n\ndef main() -> IO(Unit):\n  result = loop!(2000000, 17)\n  IO.print(U32.show(result))\n', 'fork-loop': 'import Base\n\ndef loop?(n: U32, x: U32) -> U32:\n  match n:\n    case 0:\n      x\n    case _:\n      loop((n - 1 : U32), (x * 1664525 + 1013904223 : U32))\n\ndef tree(+depth: Nat) -> U32:\n  match depth:\n    case 0n:\n      loop(100000, 17)\n    case 1n+p:\n      a b = tree(p) tree(p)\n      (a + b : U32)\n\ndef main() -> IO(Unit):\n  result = tree!(10n)\n  IO.print(U32.show(result))\n'}
+          expected = {'poll-loop': '2198075537\n', 'fork-loop': '3818832896\n'}
+          report = {
+              'before_sha': 'af58e48fdc6ca3511637bb4306dc032bd4a9ec12',
+              'after_sha': '809b02296d736815f389390655faa4500c627c83',
+              'platform': platform.platform(),
+              'known_repository_gate_blocker': 'comp.ts66019>66000; unchanged cap',
+              'merge_ready': False,
+              'issue_fix_credit': 0,
+              'timing_scope': 'warmed native CLI wall time, not isolated GPU kernel time',
+              'variants': {},
+          }
+
+          def record():
+              (out / 'checkpoint-after.json').write_text(json.dumps(report, indent=2))
+
+          def run(args, cwd, env, timeout=120):
+              started = time.monotonic()
+              try:
+                  p = subprocess.run([str(a) for a in args], cwd=cwd, env=env,
+                                     capture_output=True, text=True, errors='replace',
+                                     timeout=timeout)
+                  return {'command': [str(a) for a in args], 'exit': p.returncode,
+                          'stdout': p.stdout, 'stderr': p.stderr,
+                          'wall_seconds': time.monotonic() - started}
+              except subprocess.TimeoutExpired as e:
+                  return {'command': [str(a) for a in args], 'exit': 124,
+                          'stdout': str(e.stdout or ''), 'stderr': str(e.stderr or ''),
+                          'wall_seconds': time.monotonic() - started}
+
+          report['device'] = run(['swift', '-e', 'import Metal; print(MTLCreateSystemDefaultDevice()?.name ?? "NO_METAL_DEVICE")'], root, dict(os.environ))
+          record()
+          for name, source in sources.items():
+              (out / (name + '.bend')).write_text(source)
+
+          binaries = {}
+          environments = {}
+          for variant in ['before', 'after']:
+              checkout = root / variant
+              folder = out / variant
+              folder.mkdir(exist_ok=True)
+              env = dict(os.environ, BEND_LIB=str(folder / 'lib'))
+              environments[variant] = env
+              state = {'compiler_sha256': hashlib.sha256((checkout / 'bend2/comp.ts').read_bytes()).hexdigest(),
+                       'builds': {}, 'controls': {}, 'samples': {name: [] for name in sources}}
+              report['variants'][variant] = state
+              checkpoint = folder / 'checkpoint'
+              state['checkpoint_build'] = run(['bun', 'bend2/main.ts', 'tests/io/device_heap_stop.bend', '-o', checkpoint], checkout, env)
+              record()
+              if state['checkpoint_build']['exit'] != 0:
+                  raise RuntimeError(variant + ' checkpoint build failed')
+              state['checkpoint'] = run([checkpoint, '+RTS', '--gpu', '512MB', '-RTS'], checkout, env, timeout=45)
+              record()
+              wanted = '4\n' if variant == 'before' else '0\n'
+              if state['checkpoint']['exit'] != 0 or state['checkpoint']['stdout'] != wanted:
+                  raise RuntimeError(variant + ' actual allocator checkpoint mismatch')
+              for name in sources:
+                  source = out / (name + '.bend')
+                  emitted = folder / (name + '.c')
+                  emit = run(['bun', 'bend2/main.ts', source, '-o', emitted], checkout, env)
+                  state['builds'][name] = {'emit': emit}
+                  record()
+                  if emit['exit'] != 0 or not re.search(r'^#define BANGS\s+1$', emitted.read_text(), re.M):
+                      raise RuntimeError(name + ' did not emit a real GPU call')
+                  binary = folder / name
+                  build = run(['bun', 'bend2/main.ts', source, '-o', binary], checkout, env)
+                  state['builds'][name]['native'] = build
+                  record()
+                  if build['exit'] != 0:
+                      raise RuntimeError(variant + ' ' + name + ' native build failed')
+                  binaries[(variant, name)] = binary
+                  cpu = run([binary, '+RTS', '--gpu', 'off', '-RTS'], checkout, env, timeout=60)
+                  warm = run([binary, '+RTS', '--gpu', '512MB', '-RTS'], checkout, env, timeout=60)
+                  state['controls'][name] = {'cpu': cpu, 'gpu_warm': warm}
+                  record()
+                  for result in [cpu, warm]:
+                      if result['exit'] != 0 or result['stdout'] != expected[name]:
+                          raise RuntimeError(variant + ' ' + name + ' control failed')
+
+          for sample in range(5):
+              order = ['before', 'after'] if sample % 2 == 0 else ['after', 'before']
+              for name in sources:
+                  for variant in order:
+                      result = run([binaries[(variant, name)], '+RTS', '--gpu', '512MB', '-RTS'], root / variant, environments[variant], timeout=60)
+                      report['variants'][variant]['samples'][name].append(result)
+                      record()
+                      if result['exit'] != 0 or result['stdout'] != expected[name]:
+                          raise RuntimeError(variant + ' ' + name + ' timed consumer failed')
+          report['median_wall_seconds'] = {
+              variant: {name: statistics.median(r['wall_seconds'] for r in state['samples'][name])
+                        for name in sources}
+              for variant, state in report['variants'].items()
+          }
+          record()
+          print(json.dumps(report, indent=2), flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: device-heap-checkpoint-after
+          path: .qualification/checkpoint-after.json
+          include-hidden-files: true
+          if-no-files-found: error
