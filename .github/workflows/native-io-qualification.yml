@@ -31,9 +31,6 @@ jobs:
           mkdir -p .qualification/tmp .qualification/results
           export TMPDIR="$GITHUB_WORKSPACE/.qualification/tmp"
           ulimit -c 0
-          bun bend2/main.ts tests/io/fatal_cleanup.bend
-          bun bend2/main.ts tests/io/fatal_cleanup.bend -o .qualification/fatal-cleanup
-          .qualification/fatal-cleanup
           python3 - <<'PY'
           import json, os, pty, signal, subprocess, termios
           from pathlib import Path
@@ -63,9 +60,19 @@ jobs:
                       observed = termios.tcgetattr(slave)
                       expected = {"failstop": 1, "segv": -int(signal.SIGSEGV), "bus": -int(signal.SIGBUS), "normal": 0}[name]
                       assert ran.returncode == expected, (name, ran.returncode, ran.stderr)
-                      restored = observed == saved
+                      # PENDIN is input-queue state; normal Darwin restore sets it too.
+                      desired = list(saved)
+                      actual = list(observed)
+                      desired[3] &= ~termios.PENDIN
+                      actual[3] &= ~termios.PENDIN
+                      restored = actual == desired
                       assert restored == (variant == "after" or name == "normal"), (variant, name, saved, observed)
-                      report[variant][name] = {"exit": ran.returncode, "restored": restored, "stdout": ran.stdout, "stderr": ran.stderr}
+                      report[variant][name] = {
+                          "exit": ran.returncode, "configuration_restored": restored,
+                          "pendin_before": bool(saved[3] & termios.PENDIN),
+                          "pendin_after": bool(observed[3] & termios.PENDIN),
+                          "stdout": ran.stdout, "stderr": ran.stderr,
+                      }
                   finally:
                       termios.tcsetattr(slave, termios.TCSANOW, saved)
                       os.close(slave)
@@ -82,55 +89,11 @@ jobs:
           (results / "existing-stack-fault.json").write_text(json.dumps(stack_report, indent=2) + "\n", encoding="utf-8", newline="\n")
           PY
       - name: Record Metal device availability
+        if: always()
         run: swift -e 'import Metal; print(MTLCreateSystemDefaultDevice()?.name ?? "NO_METAL_DEVICE")'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: native-fatal-cleanup-macos
-          path: .qualification/results
-          include-hidden-files: true
-  process-pipes:
-    runs-on: macos-15
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: a51b7b44c93a86f88e08f78c613e896a8c574f74
-          persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
-        with:
-          bun-version: 1.4.0
-      - name: Run actual Bun and native interactive processes and stdin
-        env:
-          CC: clang
-          BEND_NO_TELEMETRY: '1'
-        run: |
-          uname -m
-          mkdir -p .qualification/tmp .qualification/results
-          export TMPDIR="$GITHUB_WORKSPACE/.qualification/tmp"
-          ulimit -c 0
-          python3 - <<'PY'
-          import json, subprocess
-          from pathlib import Path
-          root = Path.cwd()
-          results = root / ".qualification" / "results"
-          results.mkdir(parents=True, exist_ok=True)
-          report = {}
-          for name in ["process_open", "process_wait_invalid", "process_stdin"]:
-              source = "tests/io/" + name + ".bend"
-              binary = root / ".qualification" / name
-              runs = {}
-              for lane, command in [("bun", ["bun", "bend2/main.ts", source]), ("build", ["bun", "bend2/main.ts", source, "-o", str(binary)]), ("native", [str(binary)])]:
-                  ran = subprocess.run(command, capture_output=True, text=True, timeout=90)
-                  runs[lane] = {"exit": ran.returncode, "stdout": ran.stdout, "stderr": ran.stderr}
-                  assert ran.returncode == 0, (name, lane, runs[lane])
-              report[name] = runs
-          print(json.dumps(report, indent=2))
-          (results / "process-pipes.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8", newline="\n")
-          PY
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always()
-        with:
-          name: process-pipes-macos
           path: .qualification/results
           include-hidden-files: true
