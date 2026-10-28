@@ -24,7 +24,7 @@ static u32 device_heap_metal(id<MTLDevice> device) {
     "  Env e = { H, H + ALC_OFF + lane };\n"
     "  u64 loc = heap_alloc_miss(e, 0);\n"
     "  u32 poll = 0;\n"
-    "  result[lane * 4 + 2] = err_spun(e.mem, &poll);\n"
+    "  result[lane * 4 + 2] = err_spun(e, &poll);\n"
     "  result[lane * 4] = a32_load(a32_at(H, H_ERROR_CODE));\n"
     "  result[lane * 4 + 1] = loc == HEAP_OFF;\n"
     "  result[lane * 4 + 3] = poll;\n"
