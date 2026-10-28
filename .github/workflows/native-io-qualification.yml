@@ -1,0 +1,136 @@
+name: Native IO qualification
+on:
+  push:
+    branches: [verify/pr1624-cleanup-20261029]
+permissions:
+  contents: read
+jobs:
+  fatal-cleanup:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 4f99f4c19e1a91fd4c3a9377363d580171d4d40c
+          path: .qualification/baseline
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.0
+      - name: Run native consumer and real terminal before-after
+        env:
+          CC: clang
+          BEND_NO_TELEMETRY: '1'
+        run: |
+          uname -m
+          sw_vers
+          xcrun clang --version
+          mkdir -p .qualification/tmp .qualification/results
+          export TMPDIR="$GITHUB_WORKSPACE/.qualification/tmp"
+          ulimit -c 0
+          bun bend2/main.ts tests/io/fatal_cleanup.bend
+          bun bend2/main.ts tests/io/fatal_cleanup.bend -o .qualification/fatal-cleanup
+          .qualification/fatal-cleanup
+          python3 - <<'PY'
+          import json, os, pty, signal, subprocess, termios
+          from pathlib import Path
+          root = Path.cwd()
+          inputs = root / ".qualification" / "inputs"
+          results = root / ".qualification" / "results"
+          inputs.mkdir(parents=True, exist_ok=True)
+          results.mkdir(parents=True, exist_ok=True)
+          SOURCE = '#include <termios.h>\n#include <sys/resource.h>\n\nstatic struct termios tty_saved;\nstatic volatile sig_atomic_t tty_active;\n\nstatic void tty_restore(void) {\n  if (tty_active) {\n    while (tcsetattr(0, TCSANOW, &tty_saved) < 0 && errno == EINTR) {}\n  }\n}\n\nstatic Term tty_fail_run(Env e, Term* f, IoWork* w) {\n  struct rlimit limit = { 0, 0 };\n  if (setrlimit(RLIMIT_CORE, &limit) || tcgetattr(0, &tty_saved)) {\n    err_fail("terminal setup failed");\n  }\n  struct termios raw = tty_saved;\n  cfmakeraw(&raw);\n  tty_active = 1;\n  if (tcsetattr(0, TCSANOW, &raw)) err_fail("raw terminal failed");\n  if ((u32)f[0] == 0) err_fail("terminal cleanup probe");\n  if ((u32)f[0] == 1) raise(SIGSEGV);\n  if ((u32)f[0] == 2) raise(SIGBUS);\n  return term_pak(CID(Unit), 0);\n}\n\n__attribute__((constructor)) static void tty_fail_init(void) {\n  atexit(tty_restore);\n  io_eff(CID(TTY.fail), tty_fail_run);\n}\n'
+          ENTRIES = {'failstop': 'import Base\n\ndef TTY.fail(mode: U32) -> IO(Unit):\n  import "./tty_fatal.c"\n\ndef main() -> IO(Unit):\n  TTY.fail(0)\n', 'segv': 'import Base\n\ndef TTY.fail(mode: U32) -> IO(Unit):\n  import "./tty_fatal.c"\n\ndef main() -> IO(Unit):\n  TTY.fail(1)\n', 'bus': 'import Base\n\ndef TTY.fail(mode: U32) -> IO(Unit):\n  import "./tty_fatal.c"\n\ndef main() -> IO(Unit):\n  TTY.fail(2)\n', 'normal': 'import Base\n\ndef TTY.fail(mode: U32) -> IO(Unit):\n  import "./tty_fatal.c"\n\ndef main() -> IO(Unit):\n  TTY.fail(3)\n'}
+          report = {"before": {}, "after": {}}
+          for variant, compiler in [("before", root / ".qualification" / "baseline"), ("after", root)]:
+              source_dir = inputs / variant
+              source_dir.mkdir(parents=True, exist_ok=True)
+              source = SOURCE if variant == "before" else SOURCE.replace("  atexit(tty_restore);", "  atexit(tty_restore);\n  err_cleanup = tty_restore;")
+              (source_dir / "tty_fatal.c").write_text(source, encoding="utf-8", newline="\n")
+              for name, entry in ENTRIES.items():
+                  file = source_dir / (name + ".bend")
+                  file.write_text(entry, encoding="utf-8", newline="\n")
+                  binary = source_dir / name
+                  built = subprocess.run(["bun", str(compiler / "bend2" / "main.ts"), str(file), "-o", str(binary)], cwd=compiler, capture_output=True, text=True)
+                  assert built.returncode == 0, (name, built.stdout, built.stderr)
+                  master, slave = pty.openpty()
+                  saved = termios.tcgetattr(slave)
+                  try:
+                      ran = subprocess.run([str(binary)], stdin=slave, capture_output=True, text=True, timeout=30)
+                      observed = termios.tcgetattr(slave)
+                      expected = {"failstop": 1, "segv": -int(signal.SIGSEGV), "bus": -int(signal.SIGBUS), "normal": 0}[name]
+                      assert ran.returncode == expected, (name, ran.returncode, ran.stderr)
+                      restored = observed == saved
+                      assert restored == (variant == "after" or name == "normal"), (variant, name, saved, observed)
+                      report[variant][name] = {"exit": ran.returncode, "restored": restored, "stdout": ran.stdout, "stderr": ran.stderr}
+                  finally:
+                      termios.tcsetattr(slave, termios.TCSANOW, saved)
+                      os.close(slave)
+                      os.close(master)
+          print(json.dumps(report, indent=2))
+          (results / "pty-before-after.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8", newline="\n")
+          stack = root / ".qualification" / "stack-fault"
+          subprocess.run(["bun", "bend2/main.ts", "tests/io/stack_fault_trap.bend", "-o", str(stack)], check=True)
+          ran = subprocess.run([str(stack), "+RTS", "--threads", "2", "--gpu", "off", "-RTS"], capture_output=True, text=True, timeout=30)
+          assert ran.returncode in (-int(signal.SIGSEGV), -int(signal.SIGBUS)), ran
+          assert ran.stdout == "BEFORE\n", ran
+          stack_report = {"exit": ran.returncode, "stdout": ran.stdout, "stderr": ran.stderr}
+          print(json.dumps(stack_report, indent=2))
+          (results / "existing-stack-fault.json").write_text(json.dumps(stack_report, indent=2) + "\n", encoding="utf-8", newline="\n")
+          PY
+      - name: Record Metal device availability
+        run: swift -e 'import Metal; print(MTLCreateSystemDefaultDevice()?.name ?? "NO_METAL_DEVICE")'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: native-fatal-cleanup-macos
+          path: .qualification/results
+          include-hidden-files: true
+  process-pipes:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: a51b7b44c93a86f88e08f78c613e896a8c574f74
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.0
+      - name: Run actual Bun and native interactive processes and stdin
+        env:
+          CC: clang
+          BEND_NO_TELEMETRY: '1'
+        run: |
+          uname -m
+          mkdir -p .qualification/tmp .qualification/results
+          export TMPDIR="$GITHUB_WORKSPACE/.qualification/tmp"
+          ulimit -c 0
+          python3 - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          root = Path.cwd()
+          results = root / ".qualification" / "results"
+          results.mkdir(parents=True, exist_ok=True)
+          report = {}
+          for name in ["process_open", "process_wait_invalid", "process_stdin"]:
+              source = "tests/io/" + name + ".bend"
+              binary = root / ".qualification" / name
+              runs = {}
+              for lane, command in [("bun", ["bun", "bend2/main.ts", source]), ("build", ["bun", "bend2/main.ts", source, "-o", str(binary)]), ("native", [str(binary)])]:
+                  ran = subprocess.run(command, capture_output=True, text=True, timeout=90)
+                  runs[lane] = {"exit": ran.returncode, "stdout": ran.stdout, "stderr": ran.stderr}
+                  assert ran.returncode == 0, (name, lane, runs[lane])
+              report[name] = runs
+          print(json.dumps(report, indent=2))
+          (results / "process-pipes.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8", newline="\n")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: process-pipes-macos
+          path: .qualification/results
+          include-hidden-files: true
