@@ -1,0 +1,94 @@
+name: Metal allocation qualification
+on:
+  push:
+    branches: [verify/metal-baseline-20261029]
+permissions:
+  contents: read
+jobs:
+  actual-metal-baseline:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.0
+      - name: Exercise real Metal and bounded allocation failures on unchanged main
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import platform
+          import subprocess
+          from pathlib import Path
+
+          root = Path.cwd()
+          out = root / '.qualification'
+          out.mkdir(exist_ok=True)
+          env = dict(os.environ, BEND_LIB=str(out / 'lib'))
+          report = {'base': '4f99f4c19e1a91fd4c3a9377363d580171d4d40c',
+                    'platform': platform.platform(), 'commands': [], 'oom_runs': []}
+
+          def record():
+              (out / 'metal-baseline.json').write_text(json.dumps(report, indent=2))
+
+          def run(args, timeout=120):
+              try:
+                  p = subprocess.run([str(a) for a in args], env=env, text=True,
+                                     errors='replace', capture_output=True, timeout=timeout)
+                  result = {'command': [str(a) for a in args], 'exit': p.returncode,
+                            'stdout': p.stdout, 'stderr': p.stderr}
+              except subprocess.TimeoutExpired as e:
+                  result = {'command': [str(a) for a in args], 'timeout_seconds': timeout,
+                            'stdout': (e.stdout or b'').decode(errors='replace'),
+                            'stderr': (e.stderr or b'').decode(errors='replace')}
+              return result
+
+          report['commands'].append(run(['swift', '-e', 'import Metal; if let d = MTLCreateSystemDefaultDevice() { print(d.name); print(d.maxBufferLength); print(d.recommendedMaxWorkingSetSize) } else { print("NO_METAL_DEVICE") }']))
+          cases = {
+              'sanity': 'import Base\n\ndef probe(x: U32) -> U32:\n  x\n\ndef main() -> IO(Unit):\n  IO.print(U32.show(probe!(7)))\n',
+              'float-show': 'import Base\n\ndef sh(x: F32) -> String:\n  F32.show(x)\n\ndef main() -> IO(Unit):\n  IO.print(sh!(1.5))\n',
+          }
+          for name, source in cases.items():
+              bend = out / (name + '.bend')
+              exe = out / name
+              bend.write_text(source)
+              build = run(['bun', 'bend2/main.ts', bend, '-o', exe])
+              report['commands'].append(build)
+              record()
+              if build.get('exit') != 0:
+                  raise RuntimeError(name + ' build failed: ' + build['stderr'])
+              for gpu in ('off', '512MB'):
+                  result = run([exe, '+RTS', '--gpu', gpu, '-RTS'], timeout=30)
+                  report['commands'].append(result)
+                  record()
+                  print(name, gpu, json.dumps(result), flush=True)
+                  if name == 'sanity' and (result.get('exit') != 0 or result['stdout'] != '7\n'):
+                      raise RuntimeError('actual Metal sanity control failed')
+
+          benches = []
+          for name in ('tree-radix', 'tree-bitonic'):
+              exe = out / name
+              build = run(['bun', 'bend2/main.ts', root / 'bench/runtime' / name / 'main.bend', '-o', exe])
+              report['commands'].append(build)
+              record()
+              if build.get('exit') != 0:
+                  raise RuntimeError(name + ' build failed: ' + build['stderr'])
+              benches.append((name, exe))
+          for i in range(200):
+              for name, exe in (benches if i % 2 == 0 else benches[::-1]):
+                  result = run([exe, '+RTS', '--gpu', '512MB', '-RTS'], timeout=15)
+                  result.update(bench=name, iteration=i)
+                  report['oom_runs'].append(result)
+                  record()
+                  print(name, i, json.dumps(result), flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: actual-metal-baseline
+          path: .qualification/metal-baseline.json
+          include-hidden-files: true
+          if-no-files-found: error
