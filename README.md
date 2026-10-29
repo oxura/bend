@@ -240,6 +240,8 @@ def add_zero(x):
 - Parallelism requires balanced calls. Flexible parallelism will be added later.
 - Atomic arrays shared across threads are experimental and need `@unsafe`.
 - One GPU per program, one event loop, and no multi-machine execution yet.
+- Device heap exhaustion is fatal; the allocating lane stops at its next
+  runtime checkpoint. Other lanes observe the shared fatal-error code.
 - One C file per program: no separate compilation, no incremental builds.
 - Compiling to native is slow (clang/CUDA/Metal). For fast development, use JS.
 - The compiler is young and has blind spots (unusually slow programs). Report.

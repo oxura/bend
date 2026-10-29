@@ -21,10 +21,11 @@ static u32 device_heap_metal(id<MTLDevice> device) {
   static const char probe[] =
     "\nkernel void heap_checkpoint(device u64* H [[buffer(0)]], "
     "device u32* result [[buffer(1)]], uint lane [[thread_position_in_grid]]) {\n"
-    "  Env e = { H, H + ALC_OFF + lane };\n"
+    "  u32 stop = 0;\n"
+    "  Env e = { H, H + ALC_OFF + lane, &stop };\n"
     "  u64 loc = heap_alloc_miss(e, 0);\n"
     "  u32 poll = 0;\n"
-    "  result[lane * 4 + 2] = err_spun(e.mem, &poll);\n"
+    "  result[lane * 4 + 2] = err_spun(e, &poll);\n"
     "  result[lane * 4] = a32_load(a32_at(H, H_ERROR_CODE));\n"
     "  result[lane * 4 + 1] = loc == HEAP_OFF;\n"
     "  result[lane * 4 + 3] = poll;\n"

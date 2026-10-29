@@ -3490,7 +3490,7 @@ using namespace metal;
 #define WL_JMP(F)  __attribute__((musttail)) return WL_##F(WL_ALL)
 #define WL_DYN(F)  __attribute__((musttail)) return wl_tab[F](WL_ALL)
 #endif
-#define WL_SPIN     for (;;) { if (err_spun(e.mem, &wpoll)) { return 0; }
+#define WL_SPIN     for (;;) { if (err_spun(e, &wpoll)) { return 0; }
 #define WL_SPUN     } break;
 #define WL_AGAIN(F) continue
 
@@ -3543,6 +3543,9 @@ typedef u64 Term;
 typedef struct {
   DEV u64* mem;
   DEV u64* alc;
+#if DEVICE
+  THR u32* stop;
+#endif
 } Env;
 
 typedef struct {
@@ -3829,7 +3832,13 @@ static void err_trap(int sig) {
 #endif
 
 #define err_seen(H)    (DEVICE && a32_load(a32_at(H, H_ERROR_CODE)) != 0)
-#define err_spun(H, n) ((++*(n) & 4095) == 0 && err_seen(H))
+// This lane owns its latch; other lanes keep the periodic global poll.
+#if DEVICE
+#define err_spun(e, n) (*(e).stop \
+  || ((++*(n) & 4095) == 0 && err_seen((e).mem)))
+#else
+#define err_spun(e, n) ((++*(n) & 4095) == 0 && err_seen((e).mem))
+#endif
 
 #if __METAL_VERSION__ >= 320
 #define err_peek(H) *(volatile DEV u32*)a32_at(H, H_ERROR_CODE)
@@ -3925,6 +3934,9 @@ OUTLINE u64 heap_alloc_miss(Env e, u32 cls) {
     if ((u64)p + pages > a32_load_acq(a32_at(H, H_CAP))
       && !corpus_grow(H, (u64)p + pages)) {
       err_post(H, ERR_HEAP);
+#if DEVICE
+      *e.stop = 1;
+#endif
       return HEAP_OFF;
     }
     got = HEAP_OFF + ((u64)p << PAGE_BITS);
@@ -4132,7 +4144,7 @@ FAR void term_drop(Env e, Term t) {
       }
     }
     for (;;) {
-      if (err_spun(H, &step) || cur == 0) {
+      if (err_spun(e, &step) || cur == 0) {
         return;
       }
       u64  loc = cur & LOC_MASK;
@@ -4617,7 +4629,7 @@ INLINE u32 monk_step(Env e, DEV Term* stk, u32 rg, u32 put0, u32 base, u32 strid
     if ((u32)H[task_tail(r) + 1] == 0) {
       bool nofk = fid_nofk((u32)term_aux(r));
       Term k    = H[task_tail(r)];
-      if (err_spun(H, &spin)) {
+      if (err_spun(e, &spin)) {
         return 2;
       }
       if (stride != 0 && nofk && (DEVICE || k == TERM_HOLE
@@ -4712,7 +4724,8 @@ extern "C" __global__ void bend_dev(DEV u64* H, u32 pass, u32 at) {
   u32 stride = grids == 1 ? CUBE_G : 1;
   u32 me     = row * CUBE_T + stride * lane;
   u32 rg     = pass == 1 ? ring_flip(me) : me;
-  Env e      = { H, H + ALC_OFF + me };
+  u32 stop   = 0;
+  Env e      = { H, H + ALC_OFF + me, &stop };
   DEV Term* stk = (DEV Term*)(H + STAK_OFF + me);
   if (lane == 0) {
     for (u32 i = 0; i < 3; i += 1) {
