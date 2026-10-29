@@ -1,0 +1,157 @@
+name: Device stop warmed execution timing
+on:
+  push:
+    branches: [verify/1924-execution-timing-20261029]
+permissions:
+  contents: read
+jobs:
+  compare-execution:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: af58e48fdc6ca3511637bb4306dc032bd4a9ec12
+          path: before
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 47b1891e0b0fe2bdc5ffe01eddae6eef9dc124ab
+          path: after
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.0
+      - name: Warm first then time clock-dependent execution inside each process
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import platform
+          import re
+          import statistics
+          import subprocess
+          import time
+          from pathlib import Path
+
+          root = Path.cwd()
+          out = root / '.qualification'
+          out.mkdir(exist_ok=True)
+          sources = {'poll-loop-timed': 'import Base\n\ndef loop?(n: U32, x: U32) -> U32:\n  match n:\n    case 0:\n      x\n    case _:\n      loop((n - 1 : U32), (x * 1664525 + 1013904223 : U32))\n\ndef rounds?(+n: U32, +seed: U32, total: U32) -> U32:\n  match n:\n    case 0:\n      total\n    case _:\n      value = loop!(2000000, (seed + n : U32))\n      rounds((n - 1 : U32), seed, (total + value : U32))\n\ndef main() -> IO(Unit):\n  do IO<Unit>:\n    Unit <- IO.print(U32.show(loop!(2000000, 17)))\n    +start : Nat <- IO.now()\n    Unit <- IO.print(Nat.show(start))\n    Unit <- IO.print(U32.show(rounds(8, U32.from_nat(start), 0)))\n    finish : Nat <- IO.now()\n    IO.print(Nat.show(Nat.sub(finish, start)))\n', 'fork-loop-timed': 'import Base\n\ndef loop?(n: U32, x: U32) -> U32:\n  match n:\n    case 0:\n      x\n    case _:\n      loop((n - 1 : U32), (x * 1664525 + 1013904223 : U32))\n\ndef tree(+depth: Nat, +seed: U32) -> U32:\n  match depth:\n    case 0n:\n      loop(100000, seed)\n    case 1n+p:\n      a b = tree(p, seed) tree(p, seed)\n      (a + b : U32)\n\ndef rounds?(+n: U32, +seed: U32, total: U32) -> U32:\n  match n:\n    case 0:\n      total\n    case _:\n      value = tree!(10n, (seed + n : U32))\n      rounds((n - 1 : U32), seed, (total + value : U32))\n\ndef main() -> IO(Unit):\n  do IO<Unit>:\n    Unit <- IO.print(U32.show(tree!(10n, 17)))\n    +start : Nat <- IO.now()\n    Unit <- IO.print(Nat.show(start))\n    Unit <- IO.print(U32.show(rounds(8, U32.from_nat(start), 0)))\n    finish : Nat <- IO.now()\n    IO.print(Nat.show(Nat.sub(finish, start)))\n'}
+          spec = {'poll-loop-timed': (2000000, 1, 2198075537),
+                  'fork-loop-timed': (100000, 1024, 3818832896)}
+          report = {
+              'before_sha': 'af58e48fdc6ca3511637bb4306dc032bd4a9ec12',
+              'after_sha': '47b1891e0b0fe2bdc5ffe01eddae6eef9dc124ab',
+              'platform': platform.platform(),
+              'timing_scope': 'IO.now milliseconds around8clock-dependentbangs after a printed warmup; host scheduling/printing included, shader startup excluded; not isolated GPU kernel time',
+              'unchanged_qualification': 'actual checkpoint4to0andhostEnv16alreadyprovedin40795125229; not rerun here',
+              'known_gate_blocker': 'comp.ts66035>66000',
+              'merge_ready': False,
+              'issue_fix_credit': 0,
+              'variants': {},
+          }
+
+          def record():
+              (out / 'execution-timing.json').write_text(json.dumps(report, indent=2))
+
+          def run(args, cwd, env, timeout=120):
+              start = time.monotonic()
+              p = subprocess.run([str(a) for a in args], cwd=cwd, env=env,
+                                 capture_output=True, text=True, errors='replace',
+                                 timeout=timeout)
+              return {'command': [str(a) for a in args], 'exit': p.returncode,
+                      'stdout': p.stdout, 'stderr': p.stderr,
+                      'wall_seconds': time.monotonic() - start}
+
+          def affine(steps):
+              mul, add = 1, 0
+              a, c = 1664525, 1013904223
+              while steps:
+                  if steps & 1:
+                      mul, add = a * mul & 0xffffffff, (a * add + c) & 0xffffffff
+                  c = c * (a + 1) & 0xffffffff
+                  a = a * a & 0xffffffff
+                  steps >>= 1
+              return mul, add
+
+          def check(result, name):
+              if result['exit'] != 0:
+                  raise RuntimeError(name + ' actual process failed')
+              values = [int(n) for n in result['stdout'].split()]
+              if len(values) != 4:
+                  raise RuntimeError(name + ' unexpected actual output')
+              steps, factor, warm = spec[name]
+              mul, add = affine(steps)
+              expected = factor * (mul * (8 * (values[1] & 0xffffffff) + 36) + 8 * add) & 0xffffffff
+              result['clock_elapsed_ms'] = values[3]
+              result['expected_checksum'] = expected
+              if values[0] != warm or values[2] != expected:
+                  raise RuntimeError(name + ' actual warm or dynamic-seed checksum mismatch')
+
+          report['device'] = run(['swift', '-e', 'import Metal; print(MTLCreateSystemDefaultDevice()?.name ?? "NO_METAL_DEVICE")'], root, dict(os.environ))
+          record()
+          for name, source in sources.items():
+              (out / (name + '.bend')).write_text(source)
+          programs = {}
+          environments = {}
+          for variant in ['before', 'after']:
+              checkout = root / variant
+              folder = out / variant
+              folder.mkdir(exist_ok=True)
+              env = dict(os.environ, BEND_LIB=str(folder / 'lib'))
+              environments[variant] = env
+              state = {'compiler_sha256': hashlib.sha256((checkout / 'bend2/comp.ts').read_bytes()).hexdigest(),
+                       'builds': {}, 'controls': {}, 'samples': {name: [] for name in sources}}
+              report['variants'][variant] = state
+              for name in sources:
+                  source = out / (name + '.bend')
+                  emitted = folder / (name + '.c')
+                  emit = run(['bun', 'bend2/main.ts', source, '-o', emitted], checkout, env)
+                  state['builds'][name] = {'emit': emit}
+                  record()
+                  if emit['exit'] != 0 or not re.search(r'^#define BANGS\s+1$', emitted.read_text(), re.M):
+                      raise RuntimeError(name + ' did not emit a GPU call')
+                  binary = folder / name
+                  state['builds'][name]['native'] = run(['bun', 'bend2/main.ts', source, '-o', binary], checkout, env)
+                  record()
+                  if state['builds'][name]['native']['exit'] != 0:
+                      raise RuntimeError(variant + ' ' + name + ' native build failed')
+                  programs[(variant, name)] = binary
+                  cpu = run([binary, '+RTS', '--gpu', 'off', '-RTS'], checkout, env, timeout=60)
+                  gpu = run([binary, '+RTS', '--gpu', '512MB', '-RTS'], checkout, env, timeout=60)
+                  state['controls'][name] = {'cpu': cpu, 'gpu': gpu}
+                  record()
+                  check(cpu, name)
+                  check(gpu, name)
+                  record()
+          for sample in range(5):
+              order = ['before', 'after'] if sample % 2 == 0 else ['after', 'before']
+              for name in sources:
+                  for variant in order:
+                      result = run([programs[(variant, name)], '+RTS', '--gpu', '512MB', '-RTS'], root / variant, environments[variant], timeout=60)
+                      report['variants'][variant]['samples'][name].append(result)
+                      record()
+                      check(result, name)
+                      record()
+          report['median_execution_ms'] = {
+              variant: {name: statistics.median(r['clock_elapsed_ms'] for r in state['samples'][name])
+                        for name in sources}
+              for variant, state in report['variants'].items()
+          }
+          report['median_whole_cli_seconds'] = {
+              variant: {name: statistics.median(r['wall_seconds'] for r in state['samples'][name])
+                        for name in sources}
+              for variant, state in report['variants'].items()
+          }
+          record()
+          print(json.dumps(report, indent=2), flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: device-stop-execution-timing
+          path: .qualification/execution-timing.json
+          include-hidden-files: true
+          if-no-files-found: error
