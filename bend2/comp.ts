@@ -3858,15 +3858,13 @@ static void err_trap(int sig) {
 #endif
 
 #define err_seen(H)    (DEVICE && a32_load(a32_at(H, H_ERROR_CODE)) != 0)
-INLINE bool err_spun(Env e, THR u32* n) {
+// This lane owns its latch; other lanes keep the periodic global poll.
 #if DEVICE
-  // Heap writes cannot alias this lane's private allocation-failure latch.
-  if (*e.stop) {
-    return true;
-  }
+#define err_spun(e, n) (*(e).stop \
+  || ((++*(n) & 4095) == 0 && err_seen((e).mem)))
+#else
+#define err_spun(e, n) ((++*(n) & 4095) == 0 && err_seen((e).mem))
 #endif
-  return (++*n & 4095) == 0 && err_seen(e.mem);
-}
 
 #if __METAL_VERSION__ >= 320
 #define err_peek(H) *(volatile DEV u32*)a32_at(H, H_ERROR_CODE)
