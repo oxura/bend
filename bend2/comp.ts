@@ -3569,6 +3569,9 @@ typedef u64 Term;
 typedef struct {
   DEV u64* mem;
   DEV u64* alc;
+#if DEVICE
+  THR u32* stop;
+#endif
 } Env;
 
 typedef struct {
@@ -3638,7 +3641,7 @@ enum { ERR_RING = 1, ERR_TAGS, ERR_HEAP, ERR_FIDS, ERR_NATS, ERR_RFCS,
 
 #define PAGE_UP(n) (((n) + PAGE_LEN - 1) & ~(PAGE_LEN - 1))
 #define ALC_OFF  PAGE_UP(H_BANK + 3 * NCLS_ALL)
-#define RING_OFF (ALC_OFF + CUBE * (2 * NCLS_ALL + 1))
+#define RING_OFF (ALC_OFF + CUBE * 2 * NCLS_ALL)
 #define STAK_OFF (RING_OFF + CUBE * RING_WORDS)
 #define STAT_OFF (STAK_OFF + CUBE * STAK_LEN)
 #define HEAP_OFF (STAT_OFF + PAGE_UP(STAT_LEN))
@@ -3855,8 +3858,15 @@ static void err_trap(int sig) {
 #endif
 
 #define err_seen(H)    (DEVICE && a32_load(a32_at(H, H_ERROR_CODE)) != 0)
-#define err_spun(e, n) ((DEVICE && ALC_STOP(e)) \
-  || ((++*(n) & 4095) == 0 && err_seen((e).mem)))
+INLINE bool err_spun(Env e, THR u32* n) {
+#if DEVICE
+  // Heap writes cannot alias this lane's private allocation-failure latch.
+  if (*e.stop) {
+    return true;
+  }
+#endif
+  return (++*n & 4095) == 0 && err_seen(e.mem);
+}
 
 #if __METAL_VERSION__ >= 320
 #define err_peek(H) *(volatile DEV u32*)a32_at(H, H_ERROR_CODE)
@@ -3913,8 +3923,6 @@ INLINE void bank_push(DEV u64* H, u32 c, u64 head) {
 #define ALC_AT(e, i)   (e).alc[(i) * LANE_STEP]
 #define ALC_LEN(e, c)  ALC_AT(e, NCLS_ALL + (c))
 #define ALC_COLD(e, c) ALC_AT(e, 2 * NCLS_ALL + (c))
-// Each device lane owns a sticky stop word after the cache rows.
-#define ALC_STOP(e)    ALC_AT(e, 2 * NCLS_ALL)
 #define KEEP(c)        (KEEP_WORDS >> (c) ? KEEP_WORDS >> (c) : 1)
 
 INLINE u32 cls_fit(u32 words) {
@@ -3954,7 +3962,9 @@ OUTLINE u64 heap_alloc_miss(Env e, u32 cls) {
     if ((u64)p + pages > a32_load_acq(a32_at(H, H_CAP))
       && !corpus_grow(H, (u64)p + pages)) {
       err_post(H, ERR_HEAP);
-      if (DEVICE) ALC_STOP(e) = 1;
+#if DEVICE
+      *e.stop = 1;
+#endif
       return HEAP_OFF;
     }
     got = HEAP_OFF + ((u64)p << PAGE_BITS);
@@ -4742,7 +4752,8 @@ extern "C" __global__ void bend_dev(DEV u64* H, u32 pass, u32 at) {
   u32 stride = grids == 1 ? CUBE_G : 1;
   u32 me     = row * CUBE_T + stride * lane;
   u32 rg     = pass == 1 ? ring_flip(me) : me;
-  Env e      = { H, H + ALC_OFF + me };
+  u32 stop   = 0;
+  Env e      = { H, H + ALC_OFF + me, &stop };
   DEV Term* stk = (DEV Term*)(H + STAK_OFF + me);
   if (lane == 0) {
     for (u32 i = 0; i < 3; i += 1) {
