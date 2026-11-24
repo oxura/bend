@@ -278,7 +278,7 @@ you like. A template may call only templates declared above it. This is how
 
 ### Laws and Proofs
 
-A law states a fact that must hold. It must be proven inside a paired def.
+A law's def lists parameter names only; its signature comes from the law.
 
 ```python
 import Base
