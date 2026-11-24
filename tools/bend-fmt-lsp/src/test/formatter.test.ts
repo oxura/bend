@@ -391,6 +391,13 @@ test("semicolon pins respect delimiters, literals, and comments", () => {
   }
 });
 
+test("honors trailing whitespace trimming without changing literal contents", () => {
+  const source = '# note  \r\nimport Base\r\ndef main() -> String:\r\n  "hi  "  # keep the literal \t';
+  assert.equal(formatBend(source), source);
+  assert.equal(formatBend(source, { trimTrailingWhitespace: true }),
+    '# note\r\nimport Base\r\ndef main() -> String:\r\n  "hi  "  # keep the literal');
+});
+
 test("mixed line endings and the final-newline state survive formatting", () => {
   for (const source of [
     "import Base\r\ndef main()->U32:\n    7\r\n",

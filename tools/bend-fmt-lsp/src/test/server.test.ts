@@ -76,7 +76,7 @@ test("serves formatting over an LSP stdio session", async (context) => {
       uri: "file:///imports.bend",
       languageId: "bend",
       version: 1,
-      text: "import   lib/dep.bend   as   Dep # dependency\n\ndef main()->U32:\n    Dep.answer()",
+      text: "import   lib/dep.bend   as   Dep # dependency  \n\ndef main()->U32:\n    Dep.answer()",
     } },
   });
   const imports = waitFor(3);
@@ -84,7 +84,7 @@ test("serves formatting over an LSP stdio session", async (context) => {
     jsonrpc: "2.0",
     id: 3,
     method: "textDocument/formatting",
-    params: { textDocument: { uri: "file:///imports.bend" }, options: { tabSize: 2, insertSpaces: true } },
+    params: { textDocument: { uri: "file:///imports.bend" }, options: { tabSize: 2, insertSpaces: true, trimTrailingWhitespace: true } },
   });
   assert.deepEqual((await imports).result, [{
     range: { start: { line: 0, character: 0 }, end: { line: 3, character: 16 } },

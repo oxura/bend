@@ -1,6 +1,7 @@
 export type FormatOptions = {
   tabSize?: number;
   insertSpaces?: boolean;
+  trimTrailingWhitespace?: boolean;
 };
 
 type Token = {
@@ -344,9 +345,10 @@ export function formatBend(source: string, options: FormatOptions = {}): string 
       pins.push(pin);
       bodyPins.set(line.tokens[at], pin);
     }
-    if (code === "") return prefix + line.comment + ending;
-    if (line.comment === "") return prefix + code + ending;
-    return prefix + code + (gluedPercent(line, line.tokens.length - 1) ? "" : "  ") + line.comment + ending;
+    const comment = options.trimTrailingWhitespace ? line.comment.trimEnd() : line.comment;
+    if (code === "") return prefix + comment + ending;
+    if (comment === "") return prefix + code + ending;
+    return prefix + code + (gluedPercent(line, line.tokens.length - 1) ? "" : "  ") + comment + ending;
   }).join("");
   try {
     if (fingerprint(lines) !== fingerprint(formatted.replace(/\r\n/g, "\n").split("\n").slice(0, finalEol ? -1 : undefined).map(splitLine))) return source;
