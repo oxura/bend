@@ -13,13 +13,13 @@ contexts:
     - match: '"'
       scope: punctuation.definition.string.begin.bend
       push: string
-    - match: "'(\\\\.|[^'])'"
+    - match: "'(\\\\.|.)'"
       scope: string.quoted.single.bend
     - match: '\b(def|law)\s+([A-Za-z_][A-Za-z0-9_.]*)'
       captures:
         1: keyword.control.bend
         2: entity.name.function.bend
-    - match: '\b(type)\s+([A-Za-z_][A-Za-z0-9_]*)'
+    - match: '\b(type)\s+([A-Za-z_][A-Za-z0-9_.]*)'
       captures:
         1: keyword.control.bend
         2: entity.name.type.bend
