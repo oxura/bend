@@ -27,9 +27,25 @@ connection.onDocumentFormatting((params): TextEdit[] => {
   const source = document.getText();
   const formatted = formatBend(source, params.options);
   if (formatted === source) return [];
+  let start = 0;
+  for (let at = 0; at < source.length && source[at] === formatted[at]; at++) {
+    if (source[at] === "\n") start = at + 1;
+  }
+  // Keep only complete unchanged lines on either edge; never split CRLF.
+  let end = source.length;
+  let formattedEnd = formatted.length;
+  for (let a = end, b = formattedEnd;
+    a > start && b > start && source[a - 1] === formatted[b - 1];) {
+    a--;
+    b--;
+    if ((a === start || source[a - 1] === "\n") && (b === start || formatted[b - 1] === "\n")) {
+      end = a;
+      formattedEnd = b;
+    }
+  }
   return [{
-    range: { start: { line: 0, character: 0 }, end: document.positionAt(source.length) },
-    newText: formatted,
+    range: { start: document.positionAt(start), end: document.positionAt(end) },
+    newText: formatted.slice(start, formattedEnd),
   }];
 });
 

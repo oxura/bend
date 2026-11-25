@@ -91,8 +91,31 @@ test("serves formatting over an LSP stdio session", async (context) => {
     newText: "import lib/dep.bend as Dep  # dependency\n\ndef main() -> U32:\n  Dep.answer()",
   }]);
 
-  const shutdown = waitFor(4);
-  send(child, { jsonrpc: "2.0", id: 4, method: "shutdown" });
+  const uri = "file:///local.bend";
+  send(child, {
+    jsonrpc: "2.0",
+    method: "textDocument/didOpen",
+    params: { textDocument: {
+      uri,
+      languageId: "bend2",
+      version: 1,
+      text: 'import Base\r\n\r\ndef main() -> String:\r\n    "🐈"\r\n\r\n# leave this line',
+    } },
+  });
+  const local = waitFor(4);
+  send(child, {
+    jsonrpc: "2.0",
+    id: 4,
+    method: "textDocument/formatting",
+    params: { textDocument: { uri }, options: { tabSize: 2, insertSpaces: true } },
+  });
+  assert.deepEqual((await local).result, [{
+    range: { start: { line: 3, character: 0 }, end: { line: 4, character: 0 } },
+    newText: '  "🐈"\r\n',
+  }]);
+
+  const shutdown = waitFor(5);
+  send(child, { jsonrpc: "2.0", id: 5, method: "shutdown" });
   assert.equal((await shutdown).result, null);
   send(child, { jsonrpc: "2.0", method: "exit" });
 });
