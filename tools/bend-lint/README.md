@@ -28,7 +28,8 @@ than once:
 bun tools/bend-lint/src/lint.ts file.bend --rules tools/bend-lint/rules/format.ts --rules tools/bend-lint/rules/file_length.bend
 ```
 
-Add `--fix` to write the fixes back to the file.
+Text output previews fixes as diffs of the affected lines. Add `--fix` to write
+the fixes back to the file.
 
 ```
 bun tools/bend-lint/src/lint.ts <file.bend> [--rules <file>]... [--config <file>]

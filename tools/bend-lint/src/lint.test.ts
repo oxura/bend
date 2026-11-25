@@ -983,6 +983,28 @@ describe("lint", () => {
     expect(render(res.diags[1])).toContain("Context:");
   });
 
+  test("fix previews keep the following line only when the edit joins or changes it", () => {
+    const file: Source = { path: "example.bend", text: "# obsolete\nimport Base\n", root: true };
+    const next = file.text.indexOf("import");
+    for (const [beg, end, replacement, hunk] of [
+      [0, next, "", "@@ -1,1 +0,0 @@\n-# obsolete"],
+      [next - 1, next, " ", "@@ -1,2 +1,1 @@\n-# obsolete\n-import Base\n+# obsolete import Base"],
+      [next, next, "# ", "@@ -2,1 +2,1 @@\n-import Base\n+# import Base"],
+    ] as const) {
+      const preview = render({
+        code: "test/preview",
+        severity: "warning",
+        message: "Edit a line",
+        fixes: [{
+          title: "Edit",
+          applicability: "safe",
+          edits: [{ span: { file, beg, end }, text: replacement }],
+        }],
+      });
+      expect(preview.slice(preview.indexOf("@@"))).toBe(hunk);
+    }
+  });
+
   test("only rules with facts get facts", async () => {
     const look: LintRule = {
       id: "test/look",

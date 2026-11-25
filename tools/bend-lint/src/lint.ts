@@ -526,17 +526,26 @@ export function render(d: Diag): string {
           const ls = starts(file, file.text);
           const first = line(ls, Math.min(...mine.map((e) => e.span.beg)));
           const from = ls[first];
-          const to = ls[line(ls, Math.max(...mine.map((e) => e.span.end))) + 1] ?? file.text.length;
-          const old = file.text.slice(from, to);
+          const last = Math.max(...mine.map(({ span }) =>
+            span.end === span.beg ? span.end : span.end - 1));
+          const next = line(ls, last) + 1;
+          const to = ls[next] ?? file.text.length;
+          let old = file.text.slice(from, to);
+          let changed = apply(
+            old,
+            mine.map((e) => ({
+              ...e,
+              span: { ...e.span, beg: e.span.beg - from, end: e.span.end - from },
+            })),
+          );
+          // Removing the final newline can join the untouched next line.
+          if (to < file.text.length && changed !== "" && !changed.endsWith("\n")) {
+            const tail = file.text.slice(to, ls[next + 1] ?? file.text.length);
+            old += tail;
+            changed += tail;
+          }
           const gone = old.match(LINE) ?? [];
-          const came =
-            apply(
-              old,
-              mine.map((e) => ({
-                ...e,
-                span: { ...e.span, beg: e.span.beg - from, end: e.span.end - from },
-              })),
-            ).match(LINE) ?? [];
+          const came = changed.match(LINE) ?? [];
           const name = file.path;
           const range = (n: number): string => (n === 0 ? first : first + 1) + "," + n;
           const show = (xs: string[], sign: string): string[] =>
